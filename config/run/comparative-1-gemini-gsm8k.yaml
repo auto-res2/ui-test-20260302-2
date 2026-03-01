@@ -1,0 +1,29 @@
+# Run config: Vanilla Self-Consistency (baseline)
+# comparative-1-gemini-gsm8k
+
+run_id: comparative-1-gemini-gsm8k
+
+method:
+  name: vanilla_sc
+  type: comparative
+  description: "Vanilla Self-Consistency: majority vote over all samples"
+
+model:
+  name: gemini-2.0-flash-exp
+  provider: google
+  temperature: 0.7
+  max_tokens: 2048
+
+dataset:
+  name: gsm8k
+  split: test
+  subset_size: 200
+  dev_size: 50
+
+inference:
+  num_samples: 20
+  batch_size: 1
+  seed: 42
+
+aggregation:
+  method: vanilla_sc

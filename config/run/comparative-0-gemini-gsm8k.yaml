@@ -1,0 +1,30 @@
+# Run config: Direct (baseline - use first sample only)
+# comparative-0-gemini-gsm8k
+
+run_id: comparative-0-gemini-gsm8k
+
+method:
+  name: direct
+  type: comparative
+  description: "Direct baseline: use only the first sample, no aggregation"
+
+model:
+  name: gemini-2.0-flash-exp
+  provider: google
+  temperature: 0.7
+  max_tokens: 2048
+
+dataset:
+  name: gsm8k
+  split: test
+  subset_size: 200
+  dev_size: 50
+
+inference:
+  num_samples: 20
+  batch_size: 1
+  seed: 42
+
+# No aggregation parameters for direct method
+aggregation:
+  method: direct

@@ -1,5 +1,5 @@
 # Main configuration for Hydra
-# This file will be populated by AI code generator based on experimental design
+# SCER-SC Chain-of-Thought Experiment
 
 defaults:
   - _self_
@@ -11,8 +11,11 @@ mode: main
 # Results output directory
 results_dir: .research/results
 
-# WandB configuration (will be set by AI agent)
+# WandB configuration
 wandb:
-  entity: ???
-  project: ???
+  entity: airas
+  project: ui-test-20260302-2
   mode: online
+
+# Cache directory for datasets and models
+cache_dir: .cache

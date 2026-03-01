@@ -1,0 +1,35 @@
+# Run config: SCER-SC (proposed method)
+# proposed-gemini-gsm8k
+
+run_id: proposed-gemini-gsm8k
+
+method:
+  name: scer_sc
+  type: proposed
+  description: "Self-Contradiction & Edit-Regularized Self-Consistency"
+
+model:
+  name: gemini-2.0-flash-exp
+  provider: google
+  temperature: 0.7
+  max_tokens: 2048
+
+dataset:
+  name: gsm8k
+  split: test
+  subset_size: 200
+  dev_size: 50
+
+inference:
+  num_samples: 20
+  batch_size: 1
+  seed: 42
+
+aggregation:
+  method: scer_sc
+  # Lambda coefficients (to be tuned on dev set)
+  lambda_L: 0.001  # length penalty
+  lambda_E: 0.1    # edit/revision penalty
+  lambda_C: 0.2    # contradiction penalty
+  lambda_H: 0.05   # hedge/uncertainty penalty
+  tune_on_dev: true
