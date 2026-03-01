@@ -282,5 +282,91 @@
     "experimental_code": "import re\nimport math\nfrom collections import Counter, defaultdict\n\nFINAL_RE = re.compile(r\"FINAL\\s*:\\s*(.+)\", re.IGNORECASE)\nNUM_RE = re.compile(r\"(-?\\d+\\.?\\d*)\")\n\nHEDGE_PAT = re.compile(r\"\\b(maybe|probably|i think|i guess|seems|might|could|unsure)\\b\", re.I)\nEDIT_PAT = re.compile(r\"\\b(wait|actually|let me|correction|i (?:was|am) wrong|mistake|recheck|recompute)\\b\", re.I)\nCONTRA_PAT = re.compile(r\"\\b(but|however|although|instead|not)\\b\", re.I)\n\n\ndef extract_final(text: str):\n    m = FINAL_RE.search(text)\n    if m:\n        return m.group(1).strip()\n    # fallback: last number\n    nums = NUM_RE.findall(text)\n    return nums[-1] if nums else None\n\n\ndef word_len(text: str) -> int:\n    return len(text.split())\n\n\ndef count_matches(pat, text: str) -> int:\n    return len(pat.findall(text))\n\n\ndef multiple_candidate_finals(text: str) -> int:\n    \"\"\"Counts how many distinct numbers appear; crude proxy for flip-flopping in math.\"\"\"\n    nums = NUM_RE.findall(text)\n    return max(0, len(set(nums)) - 1) if nums else 0\n\n\ndef sc_vote(answers):\n    c = Counter([a for a in answers if a is not None])\n    return c.most_common(1)[0][0] if c else None\n\n\ndef weighted_sc(texts, lambdas):\n    \"\"\"texts: list[str]; lambdas: dict with keys L,E,C,H (floats >=0).\"\"\"\n    score = defaultdict(float)\n    for t in texts:\n        a = extract_final(t)\n        if a is None:\n            continue\n        L = word_len(t)\n        E = count_matches(EDIT_PAT, t)\n        H = count_matches(HEDGE_PAT, t)\n        # contradiction proxy combines explicit markers + evidence of multiple candidate finals\n        C = count_matches(CONTRA_PAT, t) + multiple_candidate_finals(t)\n        s = lambdas.get('L', 0.0) * L + lambdas.get('E', 0.0) * E + lambdas.get('C', 0.0) * C + lambdas.get('H', 0.0) * H\n        w = math.exp(-s)\n        score[a] += w\n    if not score:\n        return None\n    return max(score.items(), key=lambda kv: kv[1])[0]\n\n\ndef eval_methods(samples_per_q, gold_answers, lambdas_lrs=None, lambdas_scer=None):\n    n = len(samples_per_q)\n    out = {'acc_sc': 0, 'acc_lrs': 0, 'acc_scer': 0}\n    for texts, gold in zip(samples_per_q, gold_answers):\n        answers = [extract_final(t) for t in texts]\n        pred_sc = sc_vote(answers)\n        pred_lrs = weighted_sc(texts, lambdas_lrs or {'L': 0.0})\n        pred_scer = weighted_sc(texts, lambdas_scer or {'L': 0.0, 'E': 0.0, 'C': 0.0, 'H': 0.0})\n        out['acc_sc'] += int(pred_sc == gold)\n        out['acc_lrs'] += int(pred_lrs == gold)\n        out['acc_scer'] += int(pred_scer == gold)\n    for k in list(out.keys()):\n        out[k] /= n\n    return out\n\n# Hyperparameter tuning can be done with a small grid over lambdas on a dev split:\n# e.g., L in [0,0.01,0.02], E/C/H in [0,0.2,0.5,1.0] (counts are small)",
     "expected_result": "Across 3 datasets with k=20 samples:\n- Vanilla SC accuracy (expected): GSM8K ~0.72, SVAMP ~0.68, StrategyQA ~0.63.\n- LR-SC: +0.01–0.03 absolute vs SC (dataset-dependent).\n- Proposed SCER-SC: +0.03–0.06 absolute vs SC on GSM8K and SVAMP, and +0.02–0.04 on StrategyQA, with the largest gains on questions where samples disagree and some traces show explicit backtracking/hedging.\nSecondary expectations:\n- Selected rationale length decreases 10–25% vs SC (by penalizing long/backtracking traces).\n- Transfer: λ tuned on GSM8K dev should still yield non-trivial gains on SVAMP/StrategyQA (at least +0.01–0.02), supporting generality beyond a single dataset.",
     "expected_conclusion": "Process signals inside sampled CoT traces (self-edits, contradiction markers, hedging) are exploitable as **prompt-only, zero-cost uncertainty proxies**. SCER-SC provides a novel, metacognition-inspired aggregation rule that generalizes length regularization into a broader reliability estimator while preserving self-consistency’s compute profile (no extra calls, no fine-tuning). If validated across math and commonsense benchmarks with cross-dataset transfer of hyperparameters, the work strengthens both academic value (evidence that textual reasoning dynamics predict correctness) and social/practical value (higher accuracy with shorter, less error-prone rationales, reducing cost and exposure to unsafe intermediate reasoning)."
+  },
+  "experimental_design": {
+    "experiment_summary": "Task: For each input question, the model must produce a natural-language chain-of-thought style rationale and a final answer line (“FINAL: <answer>”). We then aggregate k independent sampled rationales per question into a single predicted answer. Purpose: demonstrate that SCER-SC (Self-Contradiction & Edit-Regularized Self-Consistency) improves answer accuracy and reduces unnecessary verbosity versus a standard self-consistency baseline, using only prompt-only, post-hoc reliability estimation computed from the sampled rationale text (no extra model calls, no fine-tuning).\n\nWorkflow (per question): (1) Prompt the LLM with a fixed CoT prompt; sample k=20 outputs at temperature 0.7 (same sampling budget for all methods). (2) Parse each output to extract the final answer a_i from “FINAL:” (fallback to last number / yes-no heuristic). (3) Compute text-local process-signal features from each rationale t_i: length len_i, edit markers edit_i, contradiction proxy contra_i, hedge markers hedge_i (regex-based). (4) Aggregate answers:\n- Direct: use the first sample’s a_1.\n- Vanilla SC baseline (comparative): majority vote over a_i.\n- Proposed SCER-SC: compute weights w_i = exp(-(λ_L*len_i + λ_E*edit_i + λ_C*contra_i + λ_H*hedge_i)); output argmax_a Σ_{i:a_i=a} w_i.\n(5) Tune λ on a small dev subset (first 50 items) of the chosen dataset; evaluate on the held-out remainder.\n\nScale to fit Runner: Use one dataset only (GSM8K test split) and a small subset of 200 items total to cap API/runtime cost. With k=20, total generations = 200*20=4,000 completions (plus negligible overhead). This fits comfortably on the provided H200 runner (CPU-side regex scoring and aggregation); no GPU training is required. If running via Gemini API, GPU is unused but resources are still within limits; if using a local model, H200 VRAM is ample for an 8–30B instruct model with bf16 and batch=1 sampling.",
+    "runner_config": {
+      "runner_label": [
+        "self-hosted",
+        "gpu-runner"
+      ],
+      "description": "NVIDIA H200, VRAM: 140 GB, RAM: 240 GB"
+    },
+    "evaluation_metrics": [
+      {
+        "name": "accuracy",
+        "description": "Correctness criteria: A prediction is correct if the aggregated final answer matches the gold answer after task-appropriate normalization.\n- For GSM8K: Extract a numeric value from both predicted and gold answers (prefer the last number in the string; handle commas and currency symbols). Compare as numbers with tolerance: correct if |pred-gold| <= 1e-6 * max(1, |gold|). If extraction fails for either side, fall back to case-insensitive trimmed string match.\nCalculation method: accuracy = (1/N) * Σ_{j=1..N} 1[pred_j == gold_j under criteria].\nTask appropriateness: GSM8K is a short-answer math reasoning task; numeric normalization avoids brittle exact-string matching while still enforcing correctness.\nRelevant visualizations: (i) Bar chart of accuracy by method with 95% bootstrap CIs; (ii) Accuracy vs. question index (rolling window) to inspect stability; (iii) Scatter of per-item correctness vs. SCER-SC weight margin (top-1 minus runner-up) binned to show monotonicity."
+      },
+      {
+        "name": "Mean Selected Rationale Length",
+        "description": "Correctness criteria: Not applicable (descriptive metric). Measures verbosity of the rationale corresponding to the *selected* answer.\nCalculation method: For each question, identify the ‘winning’ sample under the method (for Vanilla SC: any sample among the majority class; pick the one with highest vote frequency then shortest length as deterministic tie-break; for SCER-SC: pick the sample with max weight among those supporting the predicted answer). Compute word count. Report mean and median across questions.\nTask appropriateness: Hypothesis claims reduced unnecessary verbosity; length is a direct, implementation-simple proxy.\nRelevant visualizations: Boxplot/violin plot of selected-length distributions by method; histogram of length differences (SCER-SC minus SC)."
+      },
+      {
+        "name": "Disagreement-Conditioned Accuracy",
+        "description": "Correctness criteria: Same as accuracy, but evaluated on subsets defined by sample disagreement.\nCalculation method: For each question, compute vanilla SC vote share v = max_a count(a)/k. Define ‘high-disagreement’ if v <= 0.6 and ‘low-disagreement’ otherwise. Compute accuracy separately on each subset.\nTask appropriateness: SCER-SC is intended to help when self-consistency samples contain unreliable voters; gains should concentrate under disagreement.\nRelevant visualizations: Grouped bar chart of accuracy by method for high- vs low-disagreement subsets; stacked histogram of vote share v."
+      },
+      {
+        "name": "Weight-Margin Calibration Proxy (AUC)",
+        "description": "Correctness criteria: Higher is better; measures whether SCER-SC’s internal confidence (weight margin) ranks correct answers above incorrect ones.\nCalculation method: For each question under SCER-SC, compute margin m = S_top1 - S_top2 where S is the summed weight per answer. Use m as a score for correctness and compute ROC-AUC for predicting correctness (binary). If S_top2 undefined (only one candidate), set S_top2=0.\nTask appropriateness: Hypothesis mentions instance-level reliability estimation; this evaluates whether the estimator’s confidence signal is informative without needing probabilistic calibration.\nRelevant visualizations: ROC curve; reliability diagram by binning margin into quantiles and plotting empirical accuracy per bin."
+      }
+    ],
+    "models_to_use": [
+      "gemini-2.5-flash (params unknown)"
+    ],
+    "datasets_to_use": [
+      "GSM8K"
+    ],
+    "proposed_method": {
+      "method_name": "SCER-SC (Self-Contradiction & Edit-Regularized Self-Consistency)",
+      "description": "Inference-only, prompt-only aggregation method for k sampled chain-of-thought outputs. Computes a per-sample reliability weight from local process-signal features (rationale length, self-edit/backtracking markers, contradiction proxies, and hedging language). Uses weighted self-consistency voting rather than unweighted majority vote, aiming to upweight coherent/decisive rationales and downweight uncertain or self-contradicting ones without additional model calls or fine-tuning.",
+      "optuna_config": {
+        "enabled": true,
+        "n_trials": 20,
+        "search_spaces": [
+          {
+            "param_name": "lambda_L",
+            "distribution_type": "loguniform",
+            "low": 0.0001,
+            "high": 0.05
+          },
+          {
+            "param_name": "lambda_E",
+            "distribution_type": "loguniform",
+            "low": 0.001,
+            "high": 5.0
+          },
+          {
+            "param_name": "lambda_C",
+            "distribution_type": "loguniform",
+            "low": 0.001,
+            "high": 5.0
+          },
+          {
+            "param_name": "lambda_H",
+            "distribution_type": "loguniform",
+            "low": 0.001,
+            "high": 5.0
+          },
+          {
+            "param_name": "k",
+            "distribution_type": "categorical",
+            "choices": [
+              10,
+              20
+            ]
+          }
+        ]
+      }
+    },
+    "comparative_methods": [
+      {
+        "method_name": "Vanilla Self-Consistency (SC)",
+        "description": "Baseline aggregation for k sampled chain-of-thought outputs: parse final answers a_i and return the majority vote (each sample has equal weight). Uses the same prompt, temperature, and k as the proposed method.",
+        "optuna_config": {
+          "enabled": false,
+          "n_trials": 0
+        }
+      }
+    ]
   }
 }
